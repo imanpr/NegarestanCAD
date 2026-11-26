@@ -1,0 +1,31 @@
+# Visual Studio & .NET Build Artifacts
+.vs/
+bin/j
+obj/
+publish/
+out/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.cache
+*.log
+
+# NuGet Packages
+*.nupkg
+*.snupkg
+packages/
+
+# Local CAD Maps & Sensitive Project Data (keep only Samples/Sample_Zone41N.cadproj)
+*.dwg
+*.dxf
+*.cadproj
+!Samples/Sample_Zone41N.cadproj
+
+# OS Files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+GITHUB_PUBLISH_COMMANDS.txt
+README0.md

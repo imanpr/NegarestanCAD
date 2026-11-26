@@ -1,0 +1,87 @@
+{
+  "FormatVersion": "1.0",
+  "ProjectName": "نمونه قطعه زمین — زون 41N",
+  "LinkedCadFilePath": null,
+  "UtmZone": 41,
+  "IsNorthernHemisphere": true,
+  "SavedAtUtc": "2026-11-25T12:00:00Z",
+  "Points": [
+    {
+      "OrderIndex": 1,
+      "Label": "A",
+      "Easting": 250000.0,
+      "Northing": 4020000.0,
+      "Latitude": 36.2921695,
+      "Longitude": 60.2159283,
+      "UtmZone": 41,
+      "IsNorthernHemisphere": true,
+      "Description": "گوشه شمال‌غربی"
+    },
+    {
+      "OrderIndex": 2,
+      "Label": "B",
+      "Easting": 250045.0,
+      "Northing": 4020000.0,
+      "Latitude": 36.2921818,
+      "Longitude": 60.2164292,
+      "UtmZone": 41,
+      "IsNorthernHemisphere": true,
+      "Description": "گوشه شمال‌شرقی"
+    },
+    {
+      "OrderIndex": 3,
+      "Label": "C",
+      "Easting": 250045.0,
+      "Northing": 4019968.0,
+      "Latitude": 36.2918935,
+      "Longitude": 60.2164398,
+      "UtmZone": 41,
+      "IsNorthernHemisphere": true,
+      "Description": "گوشه جنوب‌شرقی"
+    },
+    {
+      "OrderIndex": 4,
+      "Label": "D",
+      "Easting": 250000.0,
+      "Northing": 4019968.0,
+      "Latitude": 36.2918812,
+      "Longitude": 60.2159389,
+      "UtmZone": 41,
+      "IsNorthernHemisphere": true,
+      "Description": "گوشه جنوب‌غربی"
+    }
+  ],
+  "PrintSettings": {
+    "PaperSize": 0,
+    "Orientation": 0,
+    "ProjectTitle": "نقشه تفکیکی و تعیین محدوده UTM — نمونه زون 41N",
+    "OwnerName": "مالک نمونه",
+    "ParcelNumber": "124/8 اصلی",
+    "LocationAddress": "استان خراسان رضوی",
+    "EngineerOrCompany": "دفتر مهندسی نقشه‌برداری نگارستان",
+    "EngineerLicenseNumber": "1404-001",
+    "LogoPath": "",
+    "CustomDateShamsi": "",
+    "ScaleLabelOverride": "",
+    "Notes": "مختصات بر مبنای بیضوی WGS84 و سیستم UTM Zone 41N برداشت شده است.",
+    "IncludeDwgUnderlay": true,
+    "GrayscaleDwgUnderlay": true,
+    "ShowEdgeDistances": true,
+    "ShowInteriorAngles": true,
+    "ShowCoordinatesTable": true,
+    "ShowEdgesTable": true,
+    "UseGroundArea": true
+  },
+  "AppSettings": {
+    "IsDarkCanvas": true,
+    "UsePersianDigits": false,
+    "UseGroundMeasurements": true,
+    "FixLegacyPersianShx": true,
+    "EnableSnap": true,
+    "ShowInteriorAngles": true,
+    "ShowEdgeDistances": true,
+    "DefaultUtmZone": 41,
+    "DefaultIsNorthern": true,
+    "CoordinateDecimals": 3
+  }
+}

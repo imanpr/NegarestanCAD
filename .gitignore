@@ -27,5 +27,8 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+.gitignore
 GITHUB_PUBLISH_COMMANDS.txt
 README0.md
+src/NegarestanCAD/bin/
+src/NegarestanCAD/obj/

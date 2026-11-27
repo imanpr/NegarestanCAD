@@ -1,6 +1,6 @@
 # Visual Studio & .NET Build Artifacts
 .vs/
-bin/j
+bin/
 obj/
 publish/
 out/

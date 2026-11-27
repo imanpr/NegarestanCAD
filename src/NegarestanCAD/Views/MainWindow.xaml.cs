@@ -21,7 +21,11 @@ public partial class MainWindow : Window
     private AppSettings _appSettings = new();
     private string? _currentProjectPath;
 
-    // متغیرهای Drag & Drop برای تغییر ترتیب نقاط
+    private WorkspaceViewMode _currentViewMode = WorkspaceViewMode.SplitBoth;
+    private bool _isSyncingViewports;
+    private bool _isInitializingUi = true;
+
+    // متغیرهای Drag & Drop برای تغییر ترتیب نقاط در لیست
     private Point _dragStartPoint;
     private SurveyPoint? _draggedPoint;
 
@@ -29,51 +33,212 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        // پر کردن لیست کامل 60 زون UTM (با پیش‌فرض 41)
+        // بارگذاری تنظیمات پایدار کاربر
+        _appSettings = SettingsService.Load();
+
+        // پر کردن لیست کامل 60 زون UTM
         for (int z = 1; z <= 60; z++)
             CmbUtmZone.Items.Add(z);
-        CmbUtmZone.SelectedItem = 41;
+        CmbUtmZone.SelectedItem = Math.Clamp(_appSettings.DefaultUtmZone, 1, 60);
+        CmbHemisphere.SelectedIndex = _appSettings.DefaultIsNorthern ? 0 : 1;
 
         LstPoints.ItemsSource = _points;
+
+        // اتصال رویدادهای بوم CAD
         CadCanvas.CursorWorldMoved += CadCanvas_CursorWorldMoved;
         CadCanvas.PointClickedToAdd += CadCanvas_PointClickedToAdd;
-        CadCanvas.MeasurementUpdated += msg => TxtStatusMeasure.Text = msg;
         CadCanvas.PointDragged += CadCanvas_PointDragged;
+        CadCanvas.MeasurementUpdated += msg => TxtStatusMeasure.Text = msg;
+        CadCanvas.ViewportChanged += CadCanvas_ViewportChanged;
 
+        // اتصال رویدادهای نقشه ماهواره‌ای
+        SatelliteMap.CursorGeoMoved += SatelliteMap_CursorGeoMoved;
+        SatelliteMap.PointClickedToAdd += SatelliteMap_PointClickedToAdd;
+        SatelliteMap.PointDragged += SatelliteMap_PointDragged;
+        SatelliteMap.MeasurementUpdated += msg => TxtStatusMeasure.Text = msg;
+        SatelliteMap.ViewportChanged += SatelliteMap_ViewportChanged;
+
+        ApplyPersistentSettingsToUi();
         SetToolMode(CanvasToolMode.Pan);
+        _isInitializingUi = false;
         RecalculateAndRefresh();
     }
 
-
-    private void CadCanvas_PointDragged(int index, double wx, double wy)
+    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
-        if (index < 0 || index >= _points.Count) return;
+        // تنظیم موقعیت اولیه نقشه ماهواره‌ای روی مختصات پیش‌فرض (بریس)
+        SatelliteMap.SetView(_appSettings.DefaultMapLatitude, _appSettings.DefaultMapLongitude, _appSettings.DefaultMapZoom, raiseEvent: false);
 
-        var pt = _points[index];
-        pt.Easting = wx;
-        pt.Northing = wy;
+        // همگام‌سازی بوم خالی CAD با همان مختصات پیش‌فرض
+        var initUtm = CoordinateConverter.LatLonToUtm(_appSettings.DefaultMapLatitude, _appSettings.DefaultMapLongitude, ActiveUtmZone);
+        double initMpp = SatelliteTileService.MetersPerPixel(_appSettings.DefaultMapLatitude, _appSettings.DefaultMapZoom);
+        CadCanvas.SetViewByCenterAndMetersPerPixel(initUtm.Easting, initUtm.Northing, initMpp, raiseEvent: false);
 
-        var geo = CoordinateConverter.UtmToLatLon(wx, wy, pt.UtmZone, pt.IsNorthernHemisphere);
-        pt.Latitude = geo.Latitude;
-        pt.Longitude = geo.Longitude;
-
-        LstPoints.SelectedIndex = index;
-        TxtUtmX.Text = pt.Easting.ToString("F3", CultureInfo.InvariantCulture);
-        TxtUtmY.Text = pt.Northing.ToString("F3", CultureInfo.InvariantCulture);
-        TxtLat.Text = pt.Latitude.ToString("F7", CultureInfo.InvariantCulture);
-        TxtLon.Text = pt.Longitude.ToString("F7", CultureInfo.InvariantCulture);
-        TxtDmsPreview.Text = $"DMS: {CoordinateConverter.ToDmsString(pt.Latitude, true)}  |  {CoordinateConverter.ToDmsString(pt.Longitude, false)}";
-
-        RecalculateAndRefresh();
+        // اگر فایل DWG پیش‌فرض در تنظیمات ثبت شده و موجود باشد، خودکار باز شود
+        if (!string.IsNullOrWhiteSpace(_appSettings.DefaultStartupCadPath) && File.Exists(_appSettings.DefaultStartupCadPath))
+        {
+            await LoadCadFromPathAsync(_appSettings.DefaultStartupCadPath);
+        }
     }
 
+    private void ApplyPersistentSettingsToUi()
+    {
+        // اعمال تنظیمات پیش‌فرض سازمان و لوگو به تنظیمات چاپ رسمی
+        _printSettings.EngineerOrCompany = string.IsNullOrWhiteSpace(_appSettings.DefaultOrganizationName)
+            ? "شهرداری بریس"
+            : _appSettings.DefaultOrganizationName;
+        if (!string.IsNullOrWhiteSpace(_appSettings.DefaultLicenseNumber))
+            _printSettings.EngineerLicenseNumber = _appSettings.DefaultLicenseNumber;
+        if (!string.IsNullOrWhiteSpace(_appSettings.DefaultLogoPath) && File.Exists(_appSettings.DefaultLogoPath))
+            _printSettings.LogoPath = _appSettings.DefaultLogoPath;
+        _printSettings.SatelliteProvider = _appSettings.DefaultSatelliteProvider;
+
+        // تم بوم CAD
+        CadCanvas.IsDarkBackground = _appSettings.IsDarkCanvas;
+        BtnToggleTheme.Content = _appSettings.IsDarkCanvas ? "☀️ بوم روشن" : "🌙 بوم تیره";
+
+        // سرویس‌دهنده نقشه ماهواره‌ای
+        SatelliteMap.Provider = _appSettings.DefaultSatelliteProvider;
+        CmbSatProviderToolbar.SelectedIndex = _appSettings.DefaultSatelliteProvider switch
+        {
+            SatelliteMapProvider.GoogleHybrid => 0,
+            SatelliteMapProvider.GoogleSatellite => 1,
+            SatelliteMapProvider.EsriWorldImagery => 2,
+            SatelliteMapProvider.OpenStreetMap => 3,
+            _ => 0
+        };
+
+        ChkSyncViewports.IsChecked = _appSettings.SyncCadAndSatellite;
+        ChkEnableSnap.IsChecked = _appSettings.EnableSnap;
+        ChkShowDistances.IsChecked = _appSettings.ShowEdgeDistances;
+        ChkShowAngles.IsChecked = _appSettings.ShowInteriorAngles;
+        ChkUseGroundArea.IsChecked = _appSettings.UseGroundMeasurements;
+        ChkFixShx.IsChecked = _appSettings.FixLegacyPersianShx;
+        ChkPersianDigits.IsChecked = _appSettings.UsePersianDigits;
+
+        SetViewMode(_appSettings.DefaultViewMode);
+    }
 
     private int ActiveUtmZone => CmbUtmZone.SelectedItem is int z ? z : 41;
     private bool ActiveIsNorthern => CmbHemisphere.SelectedIndex != 1;
 
-    #region مدیریت فایل‌های DWG / DXF و پروژه
+    #region کنترل سه حالته نمایش و همگام‌سازی زنده دوطرفه CAD ↔ ماهواره
 
-    private void BtnOpenCad_Click(object sender, RoutedEventArgs e)
+    private void BtnViewCadOnly_Click(object sender, RoutedEventArgs e) => SetViewMode(WorkspaceViewMode.CadOnly);
+    private void BtnViewSatOnly_Click(object sender, RoutedEventArgs e) => SetViewMode(WorkspaceViewMode.SatelliteOnly);
+    private void BtnViewBoth_Click(object sender, RoutedEventArgs e) => SetViewMode(WorkspaceViewMode.SplitBoth);
+
+    private void SetViewMode(WorkspaceViewMode mode)
+    {
+        _currentViewMode = mode;
+
+        var activeBrush = new SolidColorBrush(Color.FromRgb(14, 165, 233));
+        var idleBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59));
+
+        BtnViewCadOnly.Background = mode == WorkspaceViewMode.CadOnly ? activeBrush : idleBrush;
+        BtnViewSatOnly.Background = mode == WorkspaceViewMode.SatelliteOnly ? activeBrush : idleBrush;
+        BtnViewBoth.Background = mode == WorkspaceViewMode.SplitBoth ? activeBrush : idleBrush;
+
+        switch (mode)
+        {
+            case WorkspaceViewMode.CadOnly:
+                ColCad.Width = new GridLength(1, GridUnitType.Star);
+                ColMapSplitter.Width = new GridLength(0);
+                ColSat.Width = new GridLength(0);
+                CadContainer.Visibility = Visibility.Visible;
+                MapGridSplitter.Visibility = Visibility.Collapsed;
+                SatContainer.Visibility = Visibility.Collapsed;
+                break;
+
+            case WorkspaceViewMode.SatelliteOnly:
+                ColCad.Width = new GridLength(0);
+                ColMapSplitter.Width = new GridLength(0);
+                ColSat.Width = new GridLength(1, GridUnitType.Star);
+                CadContainer.Visibility = Visibility.Collapsed;
+                MapGridSplitter.Visibility = Visibility.Collapsed;
+                SatContainer.Visibility = Visibility.Visible;
+                break;
+
+            case WorkspaceViewMode.SplitBoth:
+                ColCad.Width = new GridLength(1, GridUnitType.Star);
+                ColMapSplitter.Width = new GridLength(5);
+                ColSat.Width = new GridLength(1, GridUnitType.Star);
+                CadContainer.Visibility = Visibility.Visible;
+                MapGridSplitter.Visibility = Visibility.Visible;
+                SatContainer.Visibility = Visibility.Visible;
+                break;
+        }
+
+        CadCanvas.InvalidateCadCache();
+        SatelliteMap.InvalidateVisual();
+    }
+
+    private void CmbSatProviderToolbar_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isInitializingUi) return;
+        var provider = CmbSatProviderToolbar.SelectedIndex switch
+        {
+            1 => SatelliteMapProvider.GoogleSatellite,
+            2 => SatelliteMapProvider.EsriWorldImagery,
+            3 => SatelliteMapProvider.OpenStreetMap,
+            _ => SatelliteMapProvider.GoogleHybrid
+        };
+        SatelliteMap.Provider = provider;
+        _printSettings.SatelliteProvider = provider;
+        _appSettings.DefaultSatelliteProvider = provider;
+        SatelliteMap.InvalidateVisual();
+    }
+
+    private void ChkSyncViewports_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isInitializingUi) return;
+        _appSettings.SyncCadAndSatellite = ChkSyncViewports.IsChecked == true;
+    }
+
+    private void CadCanvas_ViewportChanged(double utmX, double utmY, double metersPerPixel)
+    {
+        if (_isSyncingViewports || !_appSettings.SyncCadAndSatellite) return;
+        if (double.IsNaN(utmX) || double.IsNaN(utmY) || double.IsNaN(metersPerPixel) || metersPerPixel <= 0) return;
+
+        try
+        {
+            _isSyncingViewports = true;
+            var geo = CoordinateConverter.UtmToLatLon(utmX, utmY, ActiveUtmZone, ActiveIsNorthern);
+            if (geo.Latitude is >= -85 and <= 85 && geo.Longitude is >= -180 and <= 180)
+            {
+                SatelliteMap.SetViewByCenterAndMetersPerPixel(geo.Latitude, geo.Longitude, metersPerPixel, raiseEvent: false);
+            }
+        }
+        catch { }
+        finally
+        {
+            _isSyncingViewports = false;
+        }
+    }
+
+    private void SatelliteMap_ViewportChanged(double lat, double lon, double metersPerPixel)
+    {
+        if (_isSyncingViewports || !_appSettings.SyncCadAndSatellite) return;
+        if (double.IsNaN(lat) || double.IsNaN(lon) || double.IsNaN(metersPerPixel) || metersPerPixel <= 0) return;
+
+        try
+        {
+            _isSyncingViewports = true;
+            var utm = CoordinateConverter.LatLonToUtm(lat, lon, ActiveUtmZone);
+            CadCanvas.SetViewByCenterAndMetersPerPixel(utm.Easting, utm.Northing, metersPerPixel, raiseEvent: false);
+        }
+        catch { }
+        finally
+        {
+            _isSyncingViewports = false;
+        }
+    }
+
+    #endregion
+
+    #region مدیریت فایل‌های DWG / DXF و پروژه (بارگذاری غیرمسدودکننده)
+
+    private async void BtnOpenCad_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog
         {
@@ -82,20 +247,30 @@ public partial class MainWindow : Window
         };
 
         if (dlg.ShowDialog() == true)
-            LoadCadFromPath(dlg.FileName);
+            await LoadCadFromPathAsync(dlg.FileName);
     }
 
-    private void LoadCadFromPath(string path)
+    private async Task LoadCadFromPathAsync(string path)
     {
         try
         {
+            OverlayLoading.Visibility = Visibility.Visible;
+            TxtLoadingMessage.Text = $"در حال خواندن و پردازش {Path.GetFileName(path)} ...";
             Mouse.OverrideCursor = Cursors.Wait;
-            _cadModel = CadFileService.LoadCadFile(path, _appSettings.FixLegacyPersianShx);
+
+            bool fixShx = _appSettings.FixLegacyPersianShx;
+            var loadedModel = await Task.Run(() => CadFileService.LoadCadFile(path, fixShx));
+
+            _cadModel = loadedModel;
             CadCanvas.SetCadModel(_cadModel);
 
             TxtLoadedCadFile.Text = $"{_cadModel.FileName} ({_cadModel.TotalEntityCount:N0} المان)";
             RefreshLayerList();
             RecalculateAndRefresh();
+
+            // همگام‌سازی فوری نقشه ماهواره‌ای با محدوده اولیه نقشه CAD بازشده
+            var (cx, cy, mpp) = CadCanvas.GetViewportCenterAndMetersPerPixel();
+            CadCanvas_ViewportChanged(cx, cy, mpp);
         }
         catch (Exception ex)
         {
@@ -103,6 +278,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            OverlayLoading.Visibility = Visibility.Collapsed;
             Mouse.OverrideCursor = null;
         }
     }
@@ -140,7 +316,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnLoadProject_Click(object sender, RoutedEventArgs e)
+    private async void BtnLoadProject_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog
         {
@@ -155,7 +331,10 @@ public partial class MainWindow : Window
             var doc = ProjectIoService.LoadProject(dlg.FileName);
             _currentProjectPath = dlg.FileName;
             _printSettings = doc.PrintSettings ?? new PrintSettings();
-            _appSettings = doc.AppSettings ?? new AppSettings();
+
+            // اگر لوگوی پروژه خالی بود، از لوگوی پیش‌فرض تنظیمات استفاده شود
+            if (string.IsNullOrWhiteSpace(_printSettings.LogoPath) && !string.IsNullOrWhiteSpace(_appSettings.DefaultLogoPath))
+                _printSettings.LogoPath = _appSettings.DefaultLogoPath;
 
             CmbUtmZone.SelectedItem = Math.Clamp(doc.UtmZone, 1, 60);
             CmbHemisphere.SelectedIndex = doc.IsNorthernHemisphere ? 0 : 1;
@@ -164,10 +343,10 @@ public partial class MainWindow : Window
             foreach (var p in doc.Points) _points.Add(p);
 
             if (!string.IsNullOrWhiteSpace(doc.LinkedCadFilePath) && File.Exists(doc.LinkedCadFilePath))
-                LoadCadFromPath(doc.LinkedCadFilePath);
+                await LoadCadFromPathAsync(doc.LinkedCadFilePath);
 
             RecalculateAndRefresh();
-            CadCanvas.ZoomToSurveyPoints();
+            ZoomBothToPoints();
         }
         catch (Exception ex)
         {
@@ -177,7 +356,7 @@ public partial class MainWindow : Window
 
     #endregion
 
-    #region ورود و تبدیل دوطرفه مختصات
+    #region ورود، تبدیل دوطرفه و رفتن به مختصات
 
     private void BtnConvertUtmToLatLon_Click(object sender, RoutedEventArgs e)
     {
@@ -208,11 +387,33 @@ public partial class MainWindow : Window
         TxtDmsPreview.Text = $"DMS: {CoordinateConverter.ToDmsString(lat, true)}  |  {CoordinateConverter.ToDmsString(lon, false)}";
     }
 
-    private void BtnAddPoint_Click(object sender, RoutedEventArgs e)
+    private void BtnGoToCoord_Click(object sender, RoutedEventArgs e)
     {
         double easting, northing, lat, lon;
-        northing = 0;
-        lon = 0;
+        if (TryParseDouble(TxtUtmX.Text, out easting) && TryParseDouble(TxtUtmY.Text, out northing))
+        {
+            var geo = CoordinateConverter.UtmToLatLon(easting, northing, ActiveUtmZone, ActiveIsNorthern);
+            lat = geo.Latitude; lon = geo.Longitude;
+        }
+        else if (CoordinateConverter.TryParseGeoAngle(TxtLat.Text, out lat) && CoordinateConverter.TryParseGeoAngle(TxtLon.Text, out lon))
+        {
+            var utm = CoordinateConverter.LatLonToUtm(lat, lon, ActiveUtmZone);
+            easting = utm.Easting; northing = utm.Northing;
+        }
+        else
+        {
+            MessageBox.Show("ابتدا مختصات UTM یا Lat/Lon را وارد کنید.", "مختصات خالی", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        SatelliteMap.SetView(lat, lon, 18.0, raiseEvent: false);
+        double mpp = SatelliteTileService.MetersPerPixel(lat, 18.0);
+        CadCanvas.SetViewByCenterAndMetersPerPixel(easting, northing, mpp, raiseEvent: false);
+    }
+
+    private void BtnAddPoint_Click(object sender, RoutedEventArgs e)
+    {
+        double easting = 0, northing = 0, lat = 0, lon = 0;
 
         bool hasUtm = TryParseDouble(TxtUtmX.Text, out easting) && TryParseDouble(TxtUtmY.Text, out northing);
         bool hasGeo = CoordinateConverter.TryParseGeoAngle(TxtLat.Text, out lat) && CoordinateConverter.TryParseGeoAngle(TxtLon.Text, out lon);
@@ -247,7 +448,48 @@ public partial class MainWindow : Window
     private void CadCanvas_PointClickedToAdd(double wx, double wy)
     {
         var geo = CoordinateConverter.UtmToLatLon(wx, wy, ActiveUtmZone, ActiveIsNorthern);
-        AddSurveyPoint(wx, wy, geo.Latitude, geo.Longitude, "ثبت از روی نقشه");
+        AddSurveyPoint(wx, wy, geo.Latitude, geo.Longitude, "ثبت از روی نقشه CAD");
+    }
+
+    private void SatelliteMap_PointClickedToAdd(double lat, double lon)
+    {
+        var utm = CoordinateConverter.LatLonToUtm(lat, lon, ActiveUtmZone);
+        AddSurveyPoint(utm.Easting, utm.Northing, lat, lon, "ثبت از روی نقشه ماهواره‌ای");
+    }
+
+    private void CadCanvas_PointDragged(int index, double wx, double wy)
+    {
+        if (index < 0 || index >= _points.Count) return;
+        var pt = _points[index];
+        pt.Easting = wx;
+        pt.Northing = wy;
+        var geo = CoordinateConverter.UtmToLatLon(wx, wy, pt.UtmZone, pt.IsNorthernHemisphere);
+        pt.Latitude = geo.Latitude;
+        pt.Longitude = geo.Longitude;
+        SyncSelectedPointEditors(index, pt);
+    }
+
+    private void SatelliteMap_PointDragged(int index, double lat, double lon)
+    {
+        if (index < 0 || index >= _points.Count) return;
+        var pt = _points[index];
+        pt.Latitude = lat;
+        pt.Longitude = lon;
+        var utm = CoordinateConverter.LatLonToUtm(lat, lon, pt.UtmZone);
+        pt.Easting = utm.Easting;
+        pt.Northing = utm.Northing;
+        SyncSelectedPointEditors(index, pt);
+    }
+
+    private void SyncSelectedPointEditors(int index, SurveyPoint pt)
+    {
+        LstPoints.SelectedIndex = index;
+        TxtUtmX.Text = pt.Easting.ToString("F3", CultureInfo.InvariantCulture);
+        TxtUtmY.Text = pt.Northing.ToString("F3", CultureInfo.InvariantCulture);
+        TxtLat.Text = pt.Latitude.ToString("F7", CultureInfo.InvariantCulture);
+        TxtLon.Text = pt.Longitude.ToString("F7", CultureInfo.InvariantCulture);
+        TxtDmsPreview.Text = $"DMS: {CoordinateConverter.ToDmsString(pt.Latitude, true)}  |  {CoordinateConverter.ToDmsString(pt.Longitude, false)}";
+        RecalculateAndRefresh();
     }
 
     private void AddSurveyPoint(double easting, double northing, double lat, double lon, string desc)
@@ -265,9 +507,6 @@ public partial class MainWindow : Window
 
         GeometryCalculator.ReindexAndRelabel(_points);
         RecalculateAndRefresh();
-
-        if (_points.Count == 1 && _cadModel == null)
-            CadCanvas.ZoomToSurveyPoints();
     }
 
     #endregion
@@ -316,7 +555,9 @@ public partial class MainWindow : Window
     private void LstPoints_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         CadCanvas.SelectedPointIndex = LstPoints.SelectedIndex;
+        SatelliteMap.SelectedPointIndex = LstPoints.SelectedIndex;
         CadCanvas.InvalidateVisual();
+        SatelliteMap.InvalidateVisual();
 
         if (LstPoints.SelectedItem is SurveyPoint p)
         {
@@ -408,7 +649,7 @@ public partial class MainWindow : Window
             foreach (var p in imported) _points.Add(p);
             GeometryCalculator.ReindexAndRelabel(_points);
             RecalculateAndRefresh();
-            CadCanvas.ZoomToSurveyPoints();
+            ZoomBothToPoints();
         }
         catch (Exception ex)
         {
@@ -469,198 +710,57 @@ public partial class MainWindow : Window
 
     #endregion
 
-    #region پرینت رسمی و ابزارهای بوم و لایه‌ها
+    #region پرینت رسمی، تنظیمات، درباره ما و ابزارهای بوم
 
     private void BtnOfficialPrint_Click(object sender, RoutedEventArgs e)
     {
         _printSettings.UseGroundArea = _appSettings.UseGroundMeasurements;
-        var win = new PrintPreviewWindow(_cadModel, _points.ToList(), _metrics, _printSettings, _appSettings.UsePersianDigits)
+        _printSettings.SatelliteProvider = SatelliteMap.Provider;
+
+        if (string.IsNullOrWhiteSpace(_printSettings.EngineerOrCompany) && !string.IsNullOrWhiteSpace(_appSettings.DefaultOrganizationName))
+            _printSettings.EngineerOrCompany = _appSettings.DefaultOrganizationName;
+        if (string.IsNullOrWhiteSpace(_printSettings.LogoPath) && !string.IsNullOrWhiteSpace(_appSettings.DefaultLogoPath))
+            _printSettings.LogoPath = _appSettings.DefaultLogoPath;
+
+        // اگر فایل CAD باز نشده باشد، به صورت پیش‌فرض چاپ را روی نقشه ماهواره‌ای بگذار
+        if (_cadModel == null && _printSettings.MapMode != PrintMapMode.SatelliteOnly)
+            _printSettings.MapMode = PrintMapMode.SatelliteOnly;
+
+        var win = new PrintPreviewWindow(
+            _cadModel, _points.ToList(), _metrics, _printSettings, _appSettings.UsePersianDigits,
+            ActiveUtmZone, ActiveIsNorthern, SatelliteMap.CenterLat, SatelliteMap.CenterLon)
         {
             Owner = this
         };
         win.ShowDialog();
     }
 
-    private void BtnToolPan_Click(object sender, RoutedEventArgs e) => SetToolMode(CanvasToolMode.Pan);
-    private void BtnToolAddPoint_Click(object sender, RoutedEventArgs e) => SetToolMode(CanvasToolMode.AddPoint);
-    private void BtnToolRuler_Click(object sender, RoutedEventArgs e) => SetToolMode(CanvasToolMode.Ruler);
-    private void BtnToolAngle_Click(object sender, RoutedEventArgs e) => SetToolMode(CanvasToolMode.AngleMeasure);
-
-    private void SetToolMode(CanvasToolMode mode)
+    private async void BtnSettings_Click(object sender, RoutedEventArgs e)
     {
-        CadCanvas.ToolMode = mode;
-        CadCanvas.ClearMeasurements();
-
-        var activeBrush = new SolidColorBrush(Color.FromRgb(14, 165, 233));
-        var idleBrush = new SolidColorBrush(Color.FromRgb(51, 65, 85));
-
-        BtnToolPan.Background = mode == CanvasToolMode.Pan ? activeBrush : idleBrush;
-        BtnToolAddPoint.Background = mode == CanvasToolMode.AddPoint ? activeBrush : idleBrush;
-        BtnToolRuler.Background = mode == CanvasToolMode.Ruler ? activeBrush : idleBrush;
-        BtnToolAngle.Background = mode == CanvasToolMode.AngleMeasure ? activeBrush : idleBrush;
-
-        TxtActiveToolHint.Text = mode switch
+        var win = new SettingsWindow(_appSettings) { Owner = this };
+        if (win.ShowDialog() == true)
         {
-            CanvasToolMode.Pan => "ابزار فعال: جابجایی نقشه (با اسکرول زوم کنید و با کلیک راست/وسط جابجا شوید)",
-            CanvasToolMode.AddPoint => "ابزار فعال: ثبت نقطه با کلیک روی نقشه (با اسنپ دقیق روی گوشه‌ها)",
-            CanvasToolMode.Ruler => "ابزار فعال: خط‌کش آزاد (دو نقطه را روی نقشه کلیک کنید)",
-            CanvasToolMode.AngleMeasure => "ابزار فعال: زاویه‌سنج (سه نقطه: ضلع اول، رأس زاویه، ضلع دوم را کلیک کنید)",
-            _ => string.Empty
-        };
-    }
+            _isInitializingUi = true;
+            ApplyPersistentSettingsToUi();
+            _isInitializingUi = false;
 
-    private void BtnZoomExtents_Click(object sender, RoutedEventArgs e) => CadCanvas.ZoomToExtents();
-    private void BtnZoomPoints_Click(object sender, RoutedEventArgs e) => CadCanvas.ZoomToSurveyPoints();
-
-    private void BtnToggleTheme_Click(object sender, RoutedEventArgs e)
-    {
-        _appSettings.IsDarkCanvas = !_appSettings.IsDarkCanvas;
-        CadCanvas.IsDarkBackground = _appSettings.IsDarkCanvas;
-        BtnToggleTheme.Content = _appSettings.IsDarkCanvas ? "☀️ بوم روشن" : "🌙 بوم تیره";
-        CadCanvas.InvalidateCadCache();
-    }
-
-    private void CadCanvas_CursorWorldMoved(double wx, double wy, SnapCandidate? snap)
-    {
-        bool fa = _appSettings.UsePersianDigits;
-        TxtStatusCoordsUtm.Text = $"UTM ({ActiveUtmZone}{(ActiveIsNorthern ? "N" : "S")}):  X = {PersianTextHelper.FormatPlainNumber(wx, 3, fa)}   |   Y = {PersianTextHelper.FormatPlainNumber(wy, 3, fa)}";
-
-        try
-        {
-            var geo = CoordinateConverter.UtmToLatLon(wx, wy, ActiveUtmZone, ActiveIsNorthern);
-            TxtStatusCoordsGeo.Text = $"Lat: {PersianTextHelper.FormatPlainNumber(geo.Latitude, 6, fa)}  |  Lon: {PersianTextHelper.FormatPlainNumber(geo.Longitude, 6, fa)}";
-        }
-        catch { }
-
-        TxtStatusSnap.Text = snap.HasValue
-            ? $"[SNAP: {snap.Value.Kind} | لایه: {snap.Value.LayerName}]"
-            : string.Empty;
-    }
-
-    private void RefreshLayerList()
-    {
-        if (_cadModel == null)
-        {
-            LstLayers.ItemsSource = null;
-            return;
-        }
-
-        string q = TxtLayerSearch.Text?.Trim() ?? string.Empty;
-        LstLayers.ItemsSource = string.IsNullOrEmpty(q)
-            ? _cadModel.Layers
-            : _cadModel.Layers.Where(l => l.Name.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
-    }
-
-    private void TxtLayerSearch_TextChanged(object sender, TextChangedEventArgs e) => RefreshLayerList();
-    private void ChkLayerVisible_Click(object sender, RoutedEventArgs e) => CadCanvas.RefreshVisibleLayers();
-
-    private void BtnAllLayersOn_Click(object sender, RoutedEventArgs e)
-    {
-        if (_cadModel == null) return;
-        foreach (var l in _cadModel.Layers) l.IsVisible = true;
-        CadCanvas.RefreshVisibleLayers();
-    }
-
-    private void BtnAllLayersOff_Click(object sender, RoutedEventArgs e)
-    {
-        if (_cadModel == null) return;
-        foreach (var l in _cadModel.Layers) l.IsVisible = false;
-        CadCanvas.RefreshVisibleLayers();
-    }
-
-    private void CmbUtmZone_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!IsLoaded) return;
-        foreach (var p in _points)
-        {
-            p.UtmZone = ActiveUtmZone;
-            p.IsNorthernHemisphere = ActiveIsNorthern;
-            var geo = CoordinateConverter.UtmToLatLon(p.Easting, p.Northing, p.UtmZone, p.IsNorthernHemisphere);
-            p.Latitude = geo.Latitude;
-            p.Longitude = geo.Longitude;
-        }
-        RecalculateAndRefresh();
-    }
-
-    private void SettingChanged(object sender, RoutedEventArgs e)
-    {
-        if (!IsLoaded) return;
-        _appSettings.EnableSnap = ChkEnableSnap.IsChecked == true;
-        _appSettings.ShowEdgeDistances = ChkShowDistances.IsChecked == true;
-        _appSettings.ShowInteriorAngles = ChkShowAngles.IsChecked == true;
-        _appSettings.UseGroundMeasurements = ChkUseGroundArea.IsChecked == true;
-        _appSettings.FixLegacyPersianShx = ChkFixShx.IsChecked == true;
-        _appSettings.UsePersianDigits = ChkPersianDigits.IsChecked == true;
-
-        CadCanvas.EnableSnap = _appSettings.EnableSnap;
-        CadCanvas.ShowCadUnderlay = ChkShowCadUnderlay.IsChecked == true;
-        CadCanvas.ShowEdgeDistances = _appSettings.ShowEdgeDistances;
-        CadCanvas.ShowInteriorAngles = _appSettings.ShowInteriorAngles;
-        CadCanvas.UseGroundMeasurements = _appSettings.UseGroundMeasurements;
-        CadCanvas.UsePersianDigits = _appSettings.UsePersianDigits;
-
-        if (_cadModel != null)
-        {
-            foreach (var txt in _cadModel.Texts)
-                txt.CleanedText = PersianTextHelper.CleanCadText(txt.RawText, _appSettings.FixLegacyPersianShx);
             CadCanvas.InvalidateCadCache();
+            SatelliteMap.InvalidateVisual();
+
+            if (win.StartupCadPathChanged && !string.IsNullOrWhiteSpace(_appSettings.DefaultStartupCadPath) && File.Exists(_appSettings.DefaultStartupCadPath))
+            {
+                await LoadCadFromPathAsync(_appSettings.DefaultStartupCadPath);
+            }
         }
-
-        RecalculateAndRefresh();
-        CadCanvas.InvalidateCadCache();
     }
-
-    #endregion
-
-    private void RecalculateAndRefresh()
-    {
-        _metrics = GeometryCalculator.CalculateMetrics(_points);
-        CadCanvas.SetSurveyData(_points, _metrics);
-
-        bool fa = _appSettings.UsePersianDigits;
-        TxtPointCount.Text = $"{(fa ? PersianTextHelper.ToPersianDigits(_points.Count.ToString()) : _points.Count)} نقطه";
-        BannerSelfIntersect.Visibility = _metrics.HasSelfIntersection ? Visibility.Visible : Visibility.Collapsed;
-
-        double primaryArea = _appSettings.UseGroundMeasurements ? _metrics.GroundAreaSqMeters : _metrics.PlanarAreaSqMeters;
-        double primaryPerim = _appSettings.UseGroundMeasurements ? _metrics.GroundPerimeterMeters : _metrics.PlanarPerimeterMeters;
-
-        TxtGroundArea.Text = $"{PersianTextHelper.FormatNumber(primaryArea, 2, fa)} m²";
-        TxtGroundHectares.Text = $"{PersianTextHelper.FormatPlainNumber(primaryArea / 10000.0, 4, fa)} هکتار";
-        TxtPerimeter.Text = $"{PersianTextHelper.FormatNumber(primaryPerim, 2, fa)} m";
-        TxtPlanarAreaSub.Text = $"مسطح UTM: {PersianTextHelper.FormatNumber(_metrics.PlanarAreaSqMeters, 2, fa)} m²";
-        TxtScaleFactorInfo.Text = $"ضریب مقیاس میانگین UTM: {PersianTextHelper.FormatPlainNumber(_metrics.AverageScaleFactor, 6, fa)}";
-
-        LstEdges.ItemsSource = null;
-        LstEdges.ItemsSource = _metrics.Edges;
-    }
-
-    private static bool TryParseDouble(string? text, out double val)
-    {
-        val = 0;
-        if (string.IsNullOrWhiteSpace(text)) return false;
-        string norm = PersianTextHelper.ToEnglishDigits(text.Trim()).Replace("،", ".").Replace(",", ".");
-        return double.TryParse(norm, NumberStyles.Float, CultureInfo.InvariantCulture, out val);
-    }
-
-    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
-    {
-        while (current != null)
-        {
-            if (current is T target) return target;
-            current = VisualTreeHelper.GetParent(current);
-        }
-        return null;
-    }
-
-
 
     private void BtnAbout_Click(object sender, RoutedEventArgs e)
     {
         var win = new Window
         {
             Title = "درباره برنامه — نگارستان کَد",
-            Width = 440,
-            Height = 350,
+            Width = 450,
+            Height = 365,
             ResizeMode = ResizeMode.NoResize,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
@@ -693,7 +793,7 @@ public partial class MainWindow : Window
 
         stack.Children.Add(new TextBlock
         {
-            Text = "سامانه حرفه‌ای نمایش DWG و نقشه‌برداری UTM — نسخه 1.0",
+            Text = "سامانه نمایش DWG، نقشه ماهواره‌ای و نقشه‌برداری UTM — نسخه 1.2.0",
             FontSize = 11.5,
             Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -779,4 +879,300 @@ public partial class MainWindow : Window
         win.ShowDialog();
     }
 
+    private void BtnToolPan_Click(object sender, RoutedEventArgs e) => SetToolMode(CanvasToolMode.Pan);
+    private void BtnToolAddPoint_Click(object sender, RoutedEventArgs e) => SetToolMode(CanvasToolMode.AddPoint);
+    private void BtnToolRuler_Click(object sender, RoutedEventArgs e) => SetToolMode(CanvasToolMode.Ruler);
+    private void BtnToolAngle_Click(object sender, RoutedEventArgs e) => SetToolMode(CanvasToolMode.AngleMeasure);
+
+    private void SetToolMode(CanvasToolMode mode)
+    {
+        CadCanvas.ToolMode = mode;
+        SatelliteMap.ToolMode = mode;
+        CadCanvas.ClearMeasurements();
+        SatelliteMap.ClearMeasurements();
+
+        var activeBrush = new SolidColorBrush(Color.FromRgb(14, 165, 233));
+        var idleBrush = new SolidColorBrush(Color.FromRgb(51, 65, 85));
+
+        BtnToolPan.Background = mode == CanvasToolMode.Pan ? activeBrush : idleBrush;
+        BtnToolAddPoint.Background = mode == CanvasToolMode.AddPoint ? activeBrush : idleBrush;
+        BtnToolRuler.Background = mode == CanvasToolMode.Ruler ? activeBrush : idleBrush;
+        BtnToolAngle.Background = mode == CanvasToolMode.AngleMeasure ? activeBrush : idleBrush;
+
+        TxtActiveToolHint.Text = mode switch
+        {
+            CanvasToolMode.Pan => "ابزار فعال: جابجایی نقشه (با اسکرول زوم کنید و نقاط را با درگ جابجا کنید)",
+            CanvasToolMode.AddPoint => "ابزار فعال: ثبت نقطه با کلیک (روی نقشه CAD یا ماهواره کلیک کنید)",
+            CanvasToolMode.Ruler => "ابزار فعال: خط‌کش آزاد (دو نقطه روی نقشه CAD یا ماهواره کلیک کنید)",
+            CanvasToolMode.AngleMeasure => "ابزار فعال: زاویه‌سنج (سه نقطه: ضلع اول، رأس، ضلع دوم)",
+            _ => string.Empty
+        };
+    }
+
+    private void BtnZoomExtents_Click(object sender, RoutedEventArgs e)
+    {
+        if (_cadModel != null && _cadModel.HasGeometry)
+        {
+            CadCanvas.ZoomToExtents();
+        }
+        else if (_points.Count > 0)
+        {
+            ZoomBothToPoints();
+        }
+        else
+        {
+            SatelliteMap.SetView(_appSettings.DefaultMapLatitude, _appSettings.DefaultMapLongitude, _appSettings.DefaultMapZoom, raiseEvent: true);
+        }
+    }
+
+    private void BtnZoomPoints_Click(object sender, RoutedEventArgs e) => ZoomBothToPoints();
+
+    private void ZoomBothToPoints()
+    {
+        if (_points.Count == 0)
+        {
+            BtnZoomExtents_Click(this, new RoutedEventArgs());
+            return;
+        }
+
+        if (_currentViewMode == WorkspaceViewMode.SatelliteOnly)
+            SatelliteMap.ZoomToSurveyPoints(raiseEvent: true);
+        else
+            CadCanvas.ZoomToSurveyPoints();
+    }
+
+    private void BtnToggleTheme_Click(object sender, RoutedEventArgs e)
+    {
+        _appSettings.IsDarkCanvas = !_appSettings.IsDarkCanvas;
+        CadCanvas.IsDarkBackground = _appSettings.IsDarkCanvas;
+        BtnToggleTheme.Content = _appSettings.IsDarkCanvas ? "☀️ بوم روشن" : "🌙 بوم تیره";
+        CadCanvas.InvalidateCadCache();
+        SettingsService.Save(_appSettings);
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            if (e.Key == Key.O) { BtnOpenCad_Click(this, new RoutedEventArgs()); e.Handled = true; }
+            else if (e.Key == Key.S) { BtnSaveProject_Click(this, new RoutedEventArgs()); e.Handled = true; }
+            else if (e.Key == Key.P) { BtnOfficialPrint_Click(this, new RoutedEventArgs()); e.Handled = true; }
+        }
+        else if (e.Key == Key.Escape)
+        {
+            if (QuickCoordBar.Visibility == Visibility.Visible)
+            {
+                QuickCoordBar.Visibility = Visibility.Collapsed;
+                CadCanvas.Focus();
+                e.Handled = true;
+                return;
+            }
+            SetToolMode(CanvasToolMode.Pan);
+        }
+        else if ((e.Key == Key.Add || e.Key == Key.OemPlus) && Keyboard.FocusedElement is not TextBox)
+        {
+            OpenQuickCoordEntry();
+            e.Handled = true;
+        }
+    }
+
+
+    private void OpenQuickCoordEntry()
+    {
+        string nextLabel = GeometryCalculator.IndexToAlphabetLabel(_points.Count);
+        TxtQuickPointLabel.Text = $"ورود سریع نقطه {nextLabel}:";
+        TxtQuickCoord.Clear();
+        QuickCoordBar.Visibility = Visibility.Visible;
+        TxtQuickCoord.Focus();
+    }
+
+    private void TxtQuickCoord_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+
+        string raw = PersianTextHelper.ToEnglishDigits(TxtQuickCoord.Text.Trim());
+        var parts = raw.Split(new[] { ',', '،', ';', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+
+        if (parts.Length < 2 ||
+            !double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double v1) ||
+            !double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double v2))
+        {
+            MessageBox.Show("فرمت صحیح را وارد کنید؛ مثال:\n316715.368, 2781695.808", "ورودی نامعتبر", MessageBoxButton.OK, MessageBoxImage.Warning);
+            TxtQuickCoord.SelectAll();
+            return;
+        }
+
+        // تشخیص هوشمند: اگر در بازه طول/عرض جغرافیایی باشد به UTM تبدیل می‌شود، در غیر این صورت مستقیم UTM است
+        if (Math.Abs(v1) <= 90.0 && Math.Abs(v2) <= 180.0)
+        {
+            var utm = CoordinateConverter.LatLonToUtm(v1, v2, ActiveUtmZone);
+            AddSurveyPoint(utm.Easting, utm.Northing, v1, v2, "ورود سریع کیبورد");
+        }
+        else
+        {
+            var geo = CoordinateConverter.UtmToLatLon(v1, v2, ActiveUtmZone, ActiveIsNorthern);
+            AddSurveyPoint(v1, v2, geo.Latitude, geo.Longitude, "ورود سریع کیبورد");
+        }
+
+        QuickCoordBar.Visibility = Visibility.Collapsed;
+        CadCanvas.Focus();
+    }
+
+
+    private void CadCanvas_CursorWorldMoved(double wx, double wy, SnapCandidate? snap)
+    {
+        bool fa = _appSettings.UsePersianDigits;
+        TxtStatusCoordsUtm.Text = $"UTM ({ActiveUtmZone}{(ActiveIsNorthern ? "N" : "S")}):  X = {PersianTextHelper.FormatPlainNumber(wx, 3, fa)}   |   Y = {PersianTextHelper.FormatPlainNumber(wy, 3, fa)}";
+
+        try
+        {
+            var geo = CoordinateConverter.UtmToLatLon(wx, wy, ActiveUtmZone, ActiveIsNorthern);
+            TxtStatusCoordsGeo.Text = $"Lat: {PersianTextHelper.FormatPlainNumber(geo.Latitude, 6, fa)}  |  Lon: {PersianTextHelper.FormatPlainNumber(geo.Longitude, 6, fa)}";
+        }
+        catch { }
+
+        TxtStatusSnap.Text = snap.HasValue
+            ? $"[SNAP: {snap.Value.Kind} | لایه: {snap.Value.LayerName}]"
+            : string.Empty;
+    }
+
+    private void SatelliteMap_CursorGeoMoved(double lat, double lon)
+    {
+        bool fa = _appSettings.UsePersianDigits;
+        TxtStatusCoordsGeo.Text = $"Lat: {PersianTextHelper.FormatPlainNumber(lat, 6, fa)}  |  Lon: {PersianTextHelper.FormatPlainNumber(lon, 6, fa)}";
+        try
+        {
+            var utm = CoordinateConverter.LatLonToUtm(lat, lon, ActiveUtmZone);
+            TxtStatusCoordsUtm.Text = $"UTM ({utm.Zone}{(utm.IsNorthern ? "N" : "S")}):  X = {PersianTextHelper.FormatPlainNumber(utm.Easting, 3, fa)}   |   Y = {PersianTextHelper.FormatPlainNumber(utm.Northing, 3, fa)}";
+        }
+        catch { }
+        TxtStatusSnap.Text = "[نقشه ماهواره‌ای]";
+    }
+
+    private void RefreshLayerList()
+    {
+        if (_cadModel == null)
+        {
+            LstLayers.ItemsSource = null;
+            return;
+        }
+
+        string q = TxtLayerSearch.Text?.Trim() ?? string.Empty;
+        LstLayers.ItemsSource = string.IsNullOrEmpty(q)
+            ? _cadModel.Layers
+            : _cadModel.Layers.Where(l => l.Name.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    private void TxtLayerSearch_TextChanged(object sender, TextChangedEventArgs e) => RefreshLayerList();
+    private void ChkLayerVisible_Click(object sender, RoutedEventArgs e) => CadCanvas.RefreshVisibleLayers();
+
+    private void BtnAllLayersOn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_cadModel == null) return;
+        foreach (var l in _cadModel.Layers) l.IsVisible = true;
+        CadCanvas.RefreshVisibleLayers();
+    }
+
+    private void BtnAllLayersOff_Click(object sender, RoutedEventArgs e)
+    {
+        if (_cadModel == null) return;
+        foreach (var l in _cadModel.Layers) l.IsVisible = false;
+        CadCanvas.RefreshVisibleLayers();
+    }
+
+    private void CmbUtmZone_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || _isInitializingUi) return;
+        SatelliteMap.ActiveUtmZone = ActiveUtmZone;
+        SatelliteMap.ActiveIsNorthern = ActiveIsNorthern;
+
+        foreach (var p in _points)
+        {
+            p.UtmZone = ActiveUtmZone;
+            p.IsNorthernHemisphere = ActiveIsNorthern;
+            var geo = CoordinateConverter.UtmToLatLon(p.Easting, p.Northing, p.UtmZone, p.IsNorthernHemisphere);
+            p.Latitude = geo.Latitude;
+            p.Longitude = geo.Longitude;
+        }
+        RecalculateAndRefresh();
+    }
+
+    private void SettingChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _isInitializingUi) return;
+        _appSettings.EnableSnap = ChkEnableSnap.IsChecked == true;
+        _appSettings.ShowEdgeDistances = ChkShowDistances.IsChecked == true;
+        _appSettings.ShowInteriorAngles = ChkShowAngles.IsChecked == true;
+        _appSettings.UseGroundMeasurements = ChkUseGroundArea.IsChecked == true;
+        _appSettings.FixLegacyPersianShx = ChkFixShx.IsChecked == true;
+        _appSettings.UsePersianDigits = ChkPersianDigits.IsChecked == true;
+
+        CadCanvas.EnableSnap = _appSettings.EnableSnap;
+        CadCanvas.ShowCadUnderlay = ChkShowCadUnderlay.IsChecked == true;
+        CadCanvas.ShowEdgeDistances = _appSettings.ShowEdgeDistances;
+        CadCanvas.ShowInteriorAngles = _appSettings.ShowInteriorAngles;
+        CadCanvas.UseGroundMeasurements = _appSettings.UseGroundMeasurements;
+        CadCanvas.UsePersianDigits = _appSettings.UsePersianDigits;
+
+        SatelliteMap.ShowEdgeDistances = _appSettings.ShowEdgeDistances;
+        SatelliteMap.ShowInteriorAngles = _appSettings.ShowInteriorAngles;
+        SatelliteMap.UseGroundMeasurements = _appSettings.UseGroundMeasurements;
+        SatelliteMap.UsePersianDigits = _appSettings.UsePersianDigits;
+
+        if (_cadModel != null)
+        {
+            foreach (var txt in _cadModel.Texts)
+                txt.CleanedText = PersianTextHelper.CleanCadText(txt.RawText, _appSettings.FixLegacyPersianShx);
+            CadCanvas.InvalidateCadCache();
+        }
+
+        SatelliteMap.InvalidateVisual();
+        RecalculateAndRefresh();
+    }
+
+    #endregion
+
+    private void RecalculateAndRefresh()
+    {
+        _metrics = GeometryCalculator.CalculateMetrics(_points);
+        CadCanvas.SetSurveyData(_points, _metrics);
+        SatelliteMap.ActiveUtmZone = ActiveUtmZone;
+        SatelliteMap.ActiveIsNorthern = ActiveIsNorthern;
+        SatelliteMap.SetSurveyData(_points, _metrics);
+
+        bool fa = _appSettings.UsePersianDigits;
+        TxtPointCount.Text = $"{(fa ? PersianTextHelper.ToPersianDigits(_points.Count.ToString()) : _points.Count)} نقطه";
+        BannerSelfIntersect.Visibility = _metrics.HasSelfIntersection ? Visibility.Visible : Visibility.Collapsed;
+
+        double primaryArea = _appSettings.UseGroundMeasurements ? _metrics.GroundAreaSqMeters : _metrics.PlanarAreaSqMeters;
+        double primaryPerim = _appSettings.UseGroundMeasurements ? _metrics.GroundPerimeterMeters : _metrics.PlanarPerimeterMeters;
+
+        TxtGroundArea.Text = $"{PersianTextHelper.FormatNumber(primaryArea, 2, fa)} m²";
+        TxtGroundHectares.Text = $"{PersianTextHelper.FormatPlainNumber(primaryArea / 10000.0, 4, fa)} هکتار";
+        TxtPerimeter.Text = $"{PersianTextHelper.FormatNumber(primaryPerim, 2, fa)} m";
+        TxtPlanarAreaSub.Text = $"مسطح UTM: {PersianTextHelper.FormatNumber(_metrics.PlanarAreaSqMeters, 2, fa)} m²";
+        TxtScaleFactorInfo.Text = $"ضریب مقیاس میانگین UTM: {PersianTextHelper.FormatPlainNumber(_metrics.AverageScaleFactor, 6, fa)}";
+
+        LstEdges.ItemsSource = null;
+        LstEdges.ItemsSource = _metrics.Edges;
+    }
+
+    private static bool TryParseDouble(string? text, out double val)
+    {
+        val = 0;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string norm = PersianTextHelper.ToEnglishDigits(text.Trim()).Replace("،", ".").Replace(",", ".");
+        return double.TryParse(norm, NumberStyles.Float, CultureInfo.InvariantCulture, out val);
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current != null)
+        {
+            if (current is T target) return target;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
 }

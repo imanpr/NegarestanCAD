@@ -8,12 +8,13 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>NegarestanCAD</AssemblyName>
     <RootNamespace>NegarestanCAD</RootNamespace>
-    <Version>1.0.0</Version>
-	<Authors>ایمان پرهیزکار — شهرداری بریس</Authors>
-	<Company>شهرداری بریس</Company>
-	<Copyright>© 1405 شهرداری بریس - ایمان پرهیزکار</Copyright>
-    <Product>نگارستان کَد - سامانه حرفه‌ای نمایش DWG و نقشه‌برداری UTM</Product>
-    <Description>اپلیکیشن ویندوزی فارسی برای نمایش نقشه‌های DWG/DXF، تبدیل UTM و مختصات جغرافیایی، محاسبه مساحت و پرینت رسمی</Description>
+    <Version>1.2.0</Version>
+    <Authors>ایمان پرهیزکار — شهرداری بریس</Authors>
+    <Company>شهرداری بریس</Company>
+    <Copyright>© 1405 شهرداری بریس - ایمان پرهیزکار</Copyright>
+    <Product>نگارستان کَد - سامانه حرفه‌ای نمایش DWG، نقشه ماهواره‌ای و نقشه‌برداری UTM</Product>
+    <Description>اپلیکیشن ویندوزی فارسی برای نمایش نقشه‌های DWG/DXF و تصاویر ماهواره‌ای زمین، تبدیل UTM و مختصات جغرافیایی، محاسبه مساحت و پرینت رسمی دوگانه</Description>
+    <ApplicationIcon>NegarestanCAD.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

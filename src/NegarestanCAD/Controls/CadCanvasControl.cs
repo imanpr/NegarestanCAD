@@ -59,6 +59,7 @@ public class CadCanvasControl : FrameworkElement
     public event Action<double, double, SnapCandidate?>? CursorWorldMoved;
     public event Action<double, double>? PointClickedToAdd;
     public event Action<string>? MeasurementUpdated;
+    public event Action<double, double, double>? ViewportChanged;
 
 
     // کش تصویری بوم CAD برای حرکت و اسنپ ۶۰ فریم روی نقشه‌های سنگین
@@ -221,6 +222,39 @@ public class CadCanvasControl : FrameworkElement
         _panOffsetY = h * 0.5;
 
         InvalidateCadCache();
+        RaiseViewportChanged();
+    }
+
+    public (double utmX, double utmY, double metersPerPixel) GetViewportCenterAndMetersPerPixel()
+    {
+        double w = ActualWidth > 10 ? ActualWidth : 800;
+        double h = ActualHeight > 10 ? ActualHeight : 600;
+        WorldPoint center = ScreenToWorld(new Point(w * 0.5, h * 0.5));
+        double mpp = _scale > 1e-9 ? (1.0 / _scale) : 1.0;
+        return (center.X, center.Y, mpp);
+    }
+
+    public void SetViewByCenterAndMetersPerPixel(double utmX, double utmY, double metersPerPixel, bool raiseEvent = false)
+    {
+        double w = ActualWidth > 10 ? ActualWidth : 800;
+        double h = ActualHeight > 10 ? ActualHeight : 600;
+        double newScale = Math.Clamp(1.0 / Math.Max(1e-6, metersPerPixel), 1e-5, 1e6);
+
+        _originX = utmX;
+        _originY = utmY;
+        _scale = newScale;
+        _panOffsetX = w * 0.5;
+        _panOffsetY = h * 0.5;
+
+        InvalidateCadCache();
+        if (raiseEvent)
+            RaiseViewportChanged();
+    }
+
+    private void RaiseViewportChanged()
+    {
+        var (cx, cy, mpp) = GetViewportCenterAndMetersPerPixel();
+        ViewportChanged?.Invoke(cx, cy, mpp);
     }
 
     public Point WorldToScreen(double wx, double wy)
@@ -251,6 +285,7 @@ public class CadCanvasControl : FrameworkElement
         _panOffsetY = mousePos.Y + (worldBefore.Y - _originY) * _scale;
 
         InvalidateCadCache();
+        RaiseViewportChanged();
         e.Handled = true;
     }
 
@@ -335,6 +370,7 @@ public class CadCanvasControl : FrameworkElement
             _panOffsetY += (pos.Y - _lastMouseScreen.Y);
             _lastMouseScreen = pos;
             InvalidateVisual();
+            RaiseViewportChanged();
             return;
         }
 

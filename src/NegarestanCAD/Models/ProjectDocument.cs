@@ -12,10 +12,34 @@ public enum PaperOrientationOption
     Portrait
 }
 
+public enum SatelliteMapProvider
+{
+    GoogleHybrid,
+    GoogleSatellite,
+    EsriWorldImagery,
+    OpenStreetMap
+}
+
+public enum WorkspaceViewMode
+{
+    CadOnly,
+    SatelliteOnly,
+    SplitBoth
+}
+
+public enum PrintMapMode
+{
+    BothSideBySide,
+    CadOnly,
+    SatelliteOnly
+}
+
 public class PrintSettings
 {
     public PaperSizeOption PaperSize { get; set; } = PaperSizeOption.A4;
     public PaperOrientationOption Orientation { get; set; } = PaperOrientationOption.Landscape;
+    public PrintMapMode MapMode { get; set; } = PrintMapMode.BothSideBySide;
+    public SatelliteMapProvider SatelliteProvider { get; set; } = SatelliteMapProvider.GoogleHybrid;
 
     public string ProjectTitle { get; set; } = "نقشه تفکیکی و تعیین محدوده UTM";
     public string OwnerName { get; set; } = string.Empty;
@@ -49,11 +73,26 @@ public class AppSettings
     public int DefaultUtmZone { get; set; } = 41;
     public bool DefaultIsNorthern { get; set; } = true;
     public int CoordinateDecimals { get; set; } = 3;
+
+    // تنظیمات پایدار نسخه 1.2.0
+    public string DefaultOrganizationName { get; set; } = "شهرداری بریس";
+    public string DefaultLicenseNumber { get; set; } = string.Empty;
+    public string DefaultLogoPath { get; set; } = string.Empty;
+    public string DefaultStartupCadPath { get; set; } = string.Empty;
+
+    public WorkspaceViewMode DefaultViewMode { get; set; } = WorkspaceViewMode.SplitBoth;
+    public SatelliteMapProvider DefaultSatelliteProvider { get; set; } = SatelliteMapProvider.GoogleHybrid;
+    public bool SyncCadAndSatellite { get; set; } = true;
+
+    // مختصات پیش‌فرض شروع نقشه ماهواره‌ای (بریس)
+    public double DefaultMapLatitude { get; set; } = 25.135843248135032;
+    public double DefaultMapLongitude { get; set; } = 61.18867633933179;
+    public double DefaultMapZoom { get; set; } = 16.0;
 }
 
 public class ProjectDocument
 {
-    public string FormatVersion { get; set; } = "1.0";
+    public string FormatVersion { get; set; } = "1.2";
     public string ProjectName { get; set; } = "پروژه بدون عنوان";
     public string? LinkedCadFilePath { get; set; }
     public int UtmZone { get; set; } = 41;

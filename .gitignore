@@ -32,3 +32,5 @@ GITHUB_PUBLISH_COMMANDS.txt
 README0.md
 src/NegarestanCAD/bin/
 src/NegarestanCAD/obj/
+*.zip
+*.rar

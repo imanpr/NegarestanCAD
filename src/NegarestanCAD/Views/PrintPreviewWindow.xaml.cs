@@ -13,6 +13,10 @@ public partial class PrintPreviewWindow : Window
     private readonly PolygonMetrics _metrics;
     private readonly PrintSettings _settings;
     private readonly bool _persianDigits;
+    private readonly int _activeZone;
+    private readonly bool _activeNorthern;
+    private readonly double _fallbackLat;
+    private readonly double _fallbackLon;
     private bool _isInitializing = true;
 
     public PrintPreviewWindow(
@@ -20,7 +24,11 @@ public partial class PrintPreviewWindow : Window
         IReadOnlyList<SurveyPoint> points,
         PolygonMetrics metrics,
         PrintSettings settings,
-        bool persianDigits)
+        bool persianDigits,
+        int activeZone = 41,
+        bool activeNorthern = true,
+        double fallbackLat = 25.135843248135032,
+        double fallbackLon = 61.18867633933179)
     {
         InitializeComponent();
 
@@ -29,6 +37,14 @@ public partial class PrintPreviewWindow : Window
         _metrics = metrics;
         _settings = settings;
         _persianDigits = persianDigits;
+        _activeZone = activeZone;
+        _activeNorthern = activeNorthern;
+        _fallbackLat = fallbackLat;
+        _fallbackLon = fallbackLon;
+
+        // اگر فایل CAD لود نشده باشد و هنوز حالت چاپ تغییر نکرده، پیش‌فرض روی نقشه ماهواره‌ای باشد
+        if (_cadModel == null && _settings.MapMode == PrintMapMode.CadOnly)
+            _settings.MapMode = PrintMapMode.SatelliteOnly;
 
         LoadSettingsToUi();
         _isInitializing = false;
@@ -39,6 +55,23 @@ public partial class PrintPreviewWindow : Window
     {
         CmbPaperSize.SelectedIndex = _settings.PaperSize == PaperSizeOption.A3 ? 1 : 0;
         CmbOrientation.SelectedIndex = _settings.Orientation == PaperOrientationOption.Portrait ? 1 : 0;
+
+        CmbPrintMapMode.SelectedIndex = _settings.MapMode switch
+        {
+            PrintMapMode.BothSideBySide => 0,
+            PrintMapMode.CadOnly => 1,
+            PrintMapMode.SatelliteOnly => 2,
+            _ => 0
+        };
+
+        CmbPrintSatProvider.SelectedIndex = _settings.SatelliteProvider switch
+        {
+            SatelliteMapProvider.GoogleHybrid => 0,
+            SatelliteMapProvider.GoogleSatellite => 1,
+            SatelliteMapProvider.EsriWorldImagery => 2,
+            SatelliteMapProvider.OpenStreetMap => 3,
+            _ => 0
+        };
 
         TxtProjectTitle.Text = _settings.ProjectTitle;
         TxtOwnerName.Text = _settings.OwnerName;
@@ -64,6 +97,21 @@ public partial class PrintPreviewWindow : Window
     {
         _settings.PaperSize = CmbPaperSize.SelectedIndex == 1 ? PaperSizeOption.A3 : PaperSizeOption.A4;
         _settings.Orientation = CmbOrientation.SelectedIndex == 1 ? PaperOrientationOption.Portrait : PaperOrientationOption.Landscape;
+
+        _settings.MapMode = CmbPrintMapMode.SelectedIndex switch
+        {
+            1 => PrintMapMode.CadOnly,
+            2 => PrintMapMode.SatelliteOnly,
+            _ => PrintMapMode.BothSideBySide
+        };
+
+        _settings.SatelliteProvider = CmbPrintSatProvider.SelectedIndex switch
+        {
+            1 => SatelliteMapProvider.GoogleSatellite,
+            2 => SatelliteMapProvider.EsriWorldImagery,
+            3 => SatelliteMapProvider.OpenStreetMap,
+            _ => SatelliteMapProvider.GoogleHybrid
+        };
 
         _settings.ProjectTitle = TxtProjectTitle.Text.Trim();
         _settings.OwnerName = TxtOwnerName.Text.Trim();
@@ -92,7 +140,8 @@ public partial class PrintPreviewWindow : Window
     private void RefreshPreview()
     {
         PreviewHost.Child = OfficialPrintService.BuildOfficialSheetVisual(
-            _cadModel, _points, _metrics, _settings, _persianDigits);
+            _cadModel, _points, _metrics, _settings, _persianDigits,
+            _activeZone, _activeNorthern, _fallbackLat, _fallbackLon);
     }
 
     private void BtnBrowseLogo_Click(object sender, RoutedEventArgs e)
@@ -122,7 +171,9 @@ public partial class PrintPreviewWindow : Window
         SaveUiToSettings();
         try
         {
-            bool printed = OfficialPrintService.PrintSheet(_cadModel, _points, _metrics, _settings, _persianDigits);
+            bool printed = OfficialPrintService.PrintSheet(
+                _cadModel, _points, _metrics, _settings, _persianDigits,
+                _activeZone, _activeNorthern, _fallbackLat, _fallbackLon);
             if (printed)
                 MessageBox.Show("سند رسمی با موفقیت به چاپگر ارسال شد.", "چاپ موفق", MessageBoxButton.OK, MessageBoxImage.Information);
         }
@@ -145,7 +196,9 @@ public partial class PrintPreviewWindow : Window
 
         try
         {
-            OfficialPrintService.ExportSheetToPng(dlg.FileName, _cadModel, _points, _metrics, _settings, _persianDigits);
+            OfficialPrintService.ExportSheetToPng(
+                dlg.FileName, _cadModel, _points, _metrics, _settings, _persianDigits,
+                _activeZone, _activeNorthern, _fallbackLat, _fallbackLon);
             MessageBox.Show("تصویر باکیفیت 300 DPI با موفقیت ذخیره شد.", "ذخیره موفق", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)

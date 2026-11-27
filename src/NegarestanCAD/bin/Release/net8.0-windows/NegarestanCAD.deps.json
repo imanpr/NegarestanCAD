@@ -6,7 +6,7 @@
   "compilationOptions": {},
   "targets": {
     ".NETCoreApp,Version=v8.0": {
-      "NegarestanCAD/1.0.0": {
+      "NegarestanCAD/1.2.0": {
         "dependencies": {
           "ACadSharp": "3.8.35",
           "ClosedXML": "0.105.1"
@@ -112,7 +112,7 @@
     }
   },
   "libraries": {
-    "NegarestanCAD/1.0.0": {
+    "NegarestanCAD/1.2.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""
